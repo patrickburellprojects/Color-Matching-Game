@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Color Matcher</title>
+<style>
+:root{--bg:#232425;--panel:#2f3336;--panel-light:#f3f3f3;--box-border:#1b1b1b;--accent:#ffd166;--font: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif}
+html,body{height:100%;margin:0;font-family:var(--font);background:var(--bg);color:#fff}
+.container{max-width:1200px;margin:18px auto;padding:16px;background:linear-gradient(#26292b,#1f2224);border-radius:10px;box-shadow:0 10px 40px rgba(0,0,0,.6)}
+header{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:12px}
+header h1{font-size:20px;margin:0;font-weight:700}
+.controls{display:flex;gap:8px;align-items:center}
+button{background:var(--accent);color:#000;border:0;padding:8px 12px;border-radius:8px;cursor:pointer;font-weight:700}
+.stat{background:#1b1d1f;padding:8px 12px;border-radius:8px;color:#fff;min-width:92px;text-align:center}
+.board{display:flex;gap:18px;background:var(--panel);padding:16px;border-radius:8px;align-items:start}
+.column{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:10px;align-items:stretch}
+.tile{background:var(--panel-light);border:3px solid var(--box-border);border-radius:8px;padding:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;color:#000;font-weight:700;box-shadow:inset 0 -2px 0 rgba(0,0,0,.08);aspect-ratio:1/1}
+.swatch{border:3px solid var(--box-border);border-radius:8px;cursor:pointer;box-shadow:inset 0 -2px 0 rgba(0,0,0,.12);aspect-ratio:1/1}
+.muted{opacity:.85;font-size:13px}
+.selected{outline:5px solid #ffd166aa;transform:translateY(-3px)}
+.matched{opacity:.6;pointer-events:none}
+.overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.6);z-index:120}
+.panelBox{background:#fff;color:#111;padding:18px;border-radius:10px;max-width:760px;width:92%;box-shadow:0 12px 60px rgba(0,0,0,.75)}
+.small{font-size:13px;color:#666}
+.flash-green{animation:flashGreen 1s ease forwards}
+.flash-red{animation:flashRed 1s ease forwards}
+@keyframes flashGreen{from{background:#1b1d1f}to{background:#2e7d32}} @keyframes flashRed{from{background:#1b1d1f}to{background:#b71c1c}}
+.end-btn{background:#d32f2f;color:#fff;border-radius:8px;padding:8px 12px;border:0;font-weight:700;cursor:pointer}
+.loading{color:#ddd;font-size:14px;margin-left:12px}
+@media (max-width:1000px){.board{flex-direction:column}.column{grid-template-columns:repeat(4,1fr)}}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Color Matcher</h1>
+    <div class="controls">
+      <div class="stat" id="scoreWrap">Score: <span id="score">0</span></div>
+      <div class="stat" id="roundWrap" style="display:none">Round</div>
+      <button id="startBtn">Start</button>
+      <button id="endGameHeader" class="end-btn" style="display:none;margin-left:6px">End Game</button>
+      <div class="loading" id="loadStatus">Loading color data…</div>
+    </div>
+  </header>
+
+  <main>
+    <div class="board" id="gameArea" aria-live="polite">
+      <div class="column" id="leftColumn" aria-label="Color names (click a name first)"></div>
+      <div style="width:18px"></div>
+      <div class="column" id="rightColumn" aria-label="Color swatches (click a swatch second)"></div>
+    </div>
+
+    <div style="margin-top:12px;color:#ddd" class="muted" id="instructions">
+<h3>Color Match — Instructions</h3>
+<p>This game helps you learn the names of colors and distinguish subtle shades. Rounds 1–30 follow a planned curriculum; 31+ are random from a large canonical palette based on Wikipedia/X11 hex codes (fetched at load).</p>
+<ul>
+<li>Click a name, then a swatch. Correct locks the pair (+1, green). Wrong deducts 1 (-1, red).</li>
+<li>Round 1: primaries. Rounds 1–19: mixed families for learning; Rounds 20–30: family mastery; Round 31+: infinite random.</li>
+<li>Use the red <strong>End Game</strong> button to finish and see your final score.</li>
+</ul>
+</div>
+  </main>
+</div>
+
+<div id="overlay" class="overlay" style="display:none">
+  <div class="panelBox">
+    <h2 id="overlayTitle">Start</h2>
+    <div id="overlayBody"></div>
+    <div class="footer">
+      <div class="small">You will only see color names — no hex codes. Focus on learning the names for reading and writing.</div>
+      <div><button id="overlayStart">Start Game</button></div>
+    </div>
+  </div>
+</div>
+
+<div id="nextRoundOverlay" class="overlay" style="display:none">
+  <div class="panelBox">
+    <h2>Round Complete</h2>
+    <div id="nextRoundBody"></div>
+    <div style="margin-top:12px;text-align:center">
+      <button id="nextRoundContinue">Next Round</button>
+      <button id="endGameButton" class="end-btn" style="margin-left:8px">End Game</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Color Matcher v8 — runtime-fetches the canonical Wikipedia/X11 color list (wikipedia-color-names)
+// Uses curated rounds 1-30 (mixed families for 1-19; family mastery 20-30) then infinite random from full list.
+// Loads colors from UNPKG; if running from file:// some browsers block fetch — run via a local http server if needed.
+
+const COLORS_JSON_URL = "https://unpkg.com/wikipedia-color-names@1.13.0/colors.min.json";
+
+function normalizeKey(name){ return String(name||'').toLowerCase().replace(/[^a-z0-9]+/g,'').trim(); }
+
+let MASTER = []; // will be filled with {name,hex}
+let LOOKUP = {}; // normalized -> hex
+let NAME_BY_KEY = {}; // normalized -> display name
+
+const curated = {
+  1: ["Red","Blue","Yellow","Green","Orange","Purple","White","Black","Brown","Pink","Gray","Cyan"],
+  2: ["Turquoise","Magenta","Teal","Lime","Maroon","Coral","Beige","Navy","Tan","Ivory","Gold","Silver"],
+  3: ["Pink","Sky Blue","Khaki","Olive","Peach","Slate Gray","Lavender","Sand","Cream","Plum","Chocolate (traditional)","Aqua"],
+  4: ["Light Blue","Dark Green","Pale Yellow","Navy","Forest Green","Rose","Mint Cream","Tan","Beige","Powder Blue","Coral","Amber"],
+  5: ["Cerulean","Peach","Olive","Mauve","Sage","Lemon Chiffon","Chocolate (traditional)","Ivory","Steel Blue","Sand","Lavender","Pale Green"],
+  6: ["Turquoise","Khaki","Violet","Sea Green","Apricot","Cream","Plum","Teal","Wheat","Baby Pink","Light Gray","Lime"],
+  7: ["Blush","Pale Blue","Lilac","Peach","Honeydew","Olive","Beige","Coral","Pale Green","Periwinkle","Light Tan","Lemon Chiffon"],
+  8: ["Rose","Lavender","Mint","Khaki","Taupe","Light Coral","Buttercup","Powder Blue","Light Gray","Plum","Light Green","Sand"],
+  9: ["Cobalt","Lemon","Olive","Cream","Indigo","Pink","Wheat","Beige","Forest Green","Light Blue","Bronze","Peach"],
+ 10: ["Azure","Pale Yellow","Moss","Plum","Mauve","Tan","Emerald","Apricot","Beige","Coral","Pale Blue","Salmon"],
+ 11: ["Coral","Lavender","Sky Blue","Beige","Steel Blue","Olive","Powder Blue","Peach","Moss","Ivory","Blush","Charcoal"],
+ 12: ["Olive","Moss","Avocado","Khaki","Beige","Celadon","Chartreuse","Olive Drab","Sea Green","Forest Green","Sage","Spring Green"],
+ 13: ["Ivory","Linen","Bone","White","Whitewash","Isabelline","Chalk","Blizzard","Alice Blue","Snow","Powder Blue","Champagne"],
+ 14: ["Gold","Amber","Saffron","Naples Yellow","Indian Yellow","Lead Tin Yellow","Chrome Yellow","Gamboge","Orpiment","Imperial Yellow","Cheddar","Lemon Chiffon"],
+ 15: ["Scarlet","Vermilion","Carmine","Ruby","Blood Red","Brick Red","Burgundy","Madder","Cochineal","Rossi Cross","Minium","Dragon's Blood"],
+ 16: ["Cerulean","Turquoise","Teal","Aquamarine","Aqua","Cyan","Azure","Sky Blue","Baby Blue","Powder Blue","Light Blue","Cornflower Blue"],
+ 17: ["Olive","Chartreuse","Kelly Green","Emerald","Verdigris","Sea Green","Forest Green","Avocado","Moss","Sage","Pale Green","Spring Green"],
+ 18: ["Sepia","Umber","Russet","Chestnut","Brown Sugar","Chocolate (traditional)","Coffee","Beaver","Bistre","Sienna","Saddle Brown","Tan"],
+ 19: ["Purple","Violet","Byzantium","Tyrian Purple","Archil","Mauve","Magenta","Indigo","Royal Blue","Cobalt","Ultramarine","Prussian Blue"],
+ 20: ["Cobalt","Ultramarine","Prussian Blue","Cerulean","Indigo","Woad","Egyptian Blue","Royal Blue","Navy","Steel Blue","Cornflower Blue","Azure"],
+ 21: ["Vermilion","Scarlet","Madder","Cochineal","Tyrian Purple","Dragon's Blood","Baker Miller Pink","Carmine","Ruby","Cardinal","Crimson","Firebrick"],
+ 22: ["Lead White","Ivory","Chalk","Isabelline","Whitewash","Bone","Snow","Alice Blue","Blizzard","Linen","Powder Blue","Champagne"],
+ 23: ["Jet","Obsidian","Kohl","Pitch Black","Charcoal","Payne's Gray","Ink","Black Bean","Onyx","Slate Gray","Dim Gray","Sable"],
+ 24: ["Verdigris","Emerald","Kelly Green","Absinthe","Avocado","Celadon","Sheeles Green","Sea Green","Forest Green","Olive","Chartreuse","Spring Green"],
+ 25: ["Lead Tin Yellow","Indian Yellow","Naples Yellow","Gamboge","Imperial Yellow","Saffron","Chrome Yellow","Amber","Gold","Cheddar","Lemon Chiffon","Canary"],
+ 26: ["Minium","Ginger","Dutch Orange","Tangerine","Amber","Carrot Orange","Burnt Orange","Rust","Coral","Orange","Peru","Sienna"],
+ 27: ["Archil","Mauve","Byzantine","Magenta","Violet","Tyrian Purple","Plum","Orchid","Amethyst","Puce","Byzantium","Byzantine"],
+ 28: ["Sepia","Umber","Mummy","Taupe","Russet","Coffee","Chestnut","Brown Sugar","Sienna","Chocolate (traditional)","Beaver","Bistre"],
+ 29: ["Gold","Silver","Brass","Bronze","Copper","Champagne","Satin","Bronze","Brass","Gold","Gold","Gold"],
+ 30: ["Fuchsia","Puce","Amaranth","Shocking Pink","Mountbatten Pink","Baker Miller Pink","Rose","Hot Pink","Deep Pink","Magenta","Blush","Cherry Blossom"]
+};
+
+// UI refs
+const leftColumn = document.getElementById('leftColumn');
+const rightColumn = document.getElementById('rightColumn');
+const scoreEl = document.getElementById('score');
+const scoreWrap = document.getElementById('scoreWrap');
+const startBtn = document.getElementById('startBtn');
+const overlay = document.getElementById('overlay');
+const overlayStart = document.getElementById('overlayStart');
+const nextRoundOverlay = document.getElementById('nextRoundOverlay');
+const nextRoundBody = document.getElementById('nextRoundBody');
+const nextRoundContinue = document.getElementById('nextRoundContinue');
+const endGameButton = document.getElementById('endGameButton');
+const endGameHeader = document.getElementById('endGameHeader');
+const loadStatus = document.getElementById('loadStatus');
+
+let state = { currentRound:0, score:0, leftChoice:null, rightChoice:null, currentPairs:[], movesMade:false, playing:false };
+
+startBtn.addEventListener('click', ()=>openStartOverlay());
+overlayStart.addEventListener('click', ()=>{ overlay.style.display='none'; beginPlay(); });
+nextRoundContinue.addEventListener('click', ()=>{ hideNextOverlay(); startNextRound(); });
+endGameButton.addEventListener('click', ()=>{ hideNextOverlay(); endGame(true); });
+endGameHeader.addEventListener('click', ()=>{ endGame(true); });
+
+// Fetch full color dataset
+async function loadMasterColors(){
+  loadStatus.textContent = 'Loading full color palette from Wikipedia source…';
+  try{
+    const res = await fetch(COLORS_JSON_URL);
+    if(!res.ok) throw new Error('Network response was not OK: '+res.status);
+    const data = await res.json(); // array of {name,hex,link}
+    MASTER = data.map(it=>({name: it.name, hex: it.hex.toUpperCase()}));
+    // build lookup table, normalized keys mapped to hex and canonical display name
+    MASTER.forEach(m=>{
+      const k = normalizeKey(m.name);
+      LOOKUP[k] = m.hex.toUpperCase();
+      NAME_BY_KEY[k] = m.name;
+    });
+    loadStatus.textContent = 'Color data loaded. Ready.';
+    // Pre-validate curated rounds: remove missing names, and ensure each round has 12 by filling with diverse picks
+    normalizeCurated();
+  }catch(err){
+    console.error('Failed to load color data',err);
+    loadStatus.textContent = 'Failed to load color data — check network or open via a local HTTP server.';
+  }
+}
+
+function normalizeCurated(){
+  const poolKeys = Object.keys(LOOKUP);
+  for(const r in curated){
+    // filter out missing or 'medium' etc.
+    let names = curated[r].filter(n=>{ if(/medium/i.test(n)) return false; const k = normalizeKey(n.replace(/\(.*\)/,'')); return Boolean(LOOKUP[k]); });
+    // ensure unique
+    names = Array.from(new Set(names));
+    // if fewer than 12, fill with diverse picks from pool (avoid adding similar family duplicates)
+    let i = 0;
+    const usedKeys = new Set(names.map(n=>normalizeKey(n)));
+    while(names.length < 12 && i < poolKeys.length){
+      const candidateKey = poolKeys[Math.floor(Math.random()*poolKeys.length)];
+      if(usedKeys.has(candidateKey)){ i++; continue; }
+      // pick candidate display name
+      const candidateName = NAME_BY_KEY[candidateKey];
+      names.push(candidateName);
+      usedKeys.add(candidateKey);
+    }
+    curated[r] = names.slice(0,12);
+  }
+}
+
+// Round generation: curated 1..30 else random from full MASTER
+function generateRound(roundNumber){
+  if(roundNumber === 'random'){
+    const pool = MASTER.slice();
+    const picks = [];
+    while(picks.length < 12 && pool.length){
+      const idx = Math.floor(Math.random()*pool.length);
+      const item = pool.splice(idx,1)[0];
+      picks.push({name: item.name, hex: item.hex, matched:false});
+    }
+    return picks;
+  }
+  const names = curated[roundNumber] || [];
+  const pairs = names.map(n=>{
+    const k = normalizeKey(n.replace(/\(.*\)/,''));
+    const hex = LOOKUP[k] || null;
+    const display = NAME_BY_KEY[k] || n;
+    return {name: display, hex: hex, matched:false};
+  }).filter(p=>p.hex);
+  // if less than 12 (shouldn't after normalizeCurated) fill from MASTER to 12
+  const used = new Set(pairs.map(p=>normalizeKey(p.name)));
+  let attempts = 0;
+  while(pairs.length < 12 && attempts < MASTER.length){
+    const candidate = MASTER[Math.floor(Math.random()*MASTER.length)];
+    const k = normalizeKey(candidate.name);
+    if(used.has(k)){ attempts++; continue; }
+    pairs.push({name: candidate.name, hex: candidate.hex, matched:false});
+    used.add(k);
+  }
+  // shuffle before returning
+  return shuffle(pairs);
+}
+
+function shuffle(arr){ const a = arr.slice(); for(let i=a.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]];} return a; }
+
+function renderRound(){
+  leftColumn.innerHTML = ''; rightColumn.innerHTML = '';
+  const leftTiles = state.currentPairs.map(p=>{ const d=document.createElement('div'); d.className='tile nameTile'; d.textContent=p.name; d.dataset.name=p.name; d.style.background='#e9e9e9'; d.style.color='#000'; d.addEventListener('click', ()=>selectName(d)); return d; });
+  const shuffled = shuffle(state.currentPairs.map(p=>({name:p.name,hex:p.hex})));
+  const rightTiles = shuffled.map(p=>{ const d=document.createElement('div'); d.className='swatch'; d.style.background = p.hex; if(isLight(p.hex)) d.style.boxShadow = "inset 0 -2px 0 rgba(0,0,0,.12), 0 0 0 2px rgba(0,0,0,0.06)"; d.dataset.name = p.name; d.title = p.name; d.addEventListener('click', ()=>selectSwatch(d)); return d; });
+  leftTiles.forEach(t=>leftColumn.appendChild(t)); rightTiles.forEach(t=>rightColumn.appendChild(t));
+}
+
+function isLight(hex){ if(!hex) return false; const h = hex.replace('#',''); if(h.length!==6) return false; const r = parseInt(h.slice(0,2),16), g=parseInt(h.slice(2,4),16), b=parseInt(h.slice(4,6),16); const lum = 0.2126*r + 0.7152*g + 0.0722*b; return lum > 220; }
+
+function clearSelections(){ document.querySelectorAll('.selected').forEach(el=>el.classList.remove('selected')); state.leftChoice=null; state.rightChoice=null; }
+function selectName(el){ if(el.classList.contains('matched')) return; document.querySelectorAll('.nameTile.selected').forEach(x=>x.classList.remove('selected')); el.classList.add('selected'); state.leftChoice = el.dataset.name; }
+function selectSwatch(el){ if(el.classList.contains('matched')) return; if(!state.leftChoice) return; document.querySelectorAll('.swatch.selected').forEach(x=>x.classList.remove('selected')); el.classList.add('selected'); state.rightChoice = el.dataset.name; evaluateMatch(state.leftChoice, state.rightChoice, el); }
+
+function evaluateMatch(leftName, rightName, swatchEl){
+  state.movesMade = true;
+  const pair = state.currentPairs.find(p=>p.name === leftName);
+  const leftTile = Array.from(document.querySelectorAll('.nameTile')).find(t=>t.dataset.name === leftName);
+  const isCorrect = (leftName === rightName);
+  if(isCorrect){
+    state.score += 1;
+    pair.matched = true;
+    leftTile.classList.add('matched');
+    leftTile.style.outline = '4px solid #4caf50aa';
+    leftTile.style.opacity = .6;
+    swatchEl.classList.add('matched');
+    swatchEl.style.outline = '4px solid #4caf50aa';
+    swatchEl.style.pointerEvents = 'none';
+    flashScore('green');
+  } else {
+    state.score -= 1;
+    swatchEl.animate([{transform:'translateX(-6px)'},{transform:'translateX(6px)'},{transform:'translateX(0)'}],{duration:300});
+    leftTile.animate([{transform:'translateX(6px)'},{transform:'translateX(-6px)'},{transform:'translateX(0)'}],{duration:300});
+    flashScore('red');
+  }
+  updateScore(state.score);
+  setTimeout(()=>{ clearSelections(); checkRoundEnd(); }, 400);
+  if(state.movesMade && state.score <= 0){ setTimeout(()=> endGame(false), 600); }
+}
+
+function updateScore(val){ scoreEl.textContent = val; }
+function flashScore(color){ const wrap = scoreWrap; if(color === 'green'){ wrap.classList.remove('flash-red'); wrap.classList.add('flash-green'); setTimeout(()=>wrap.classList.remove('flash-green'), 1000); } else { wrap.classList.remove('flash-green'); wrap.classList.add('flash-red'); setTimeout(()=>wrap.classList.remove('flash-red'), 1000); } }
+
+function checkRoundEnd(){ const allMatched = state.currentPairs.every(p=>p.matched); if(allMatched){ nextRoundBody.innerHTML = `<p>You completed round ${state.currentRound}. Score: <strong>${state.score}</strong>.</p><p>Ready for round ${state.currentRound+1}?</p>`; showNextOverlay(); } }
+function showNextOverlay(){ nextRoundOverlay.style.display = 'flex'; } function hideNextOverlay(){ nextRoundOverlay.style.display = 'none'; }
+
+function startNextRound(){
+  state.currentRound += 1;
+  if(state.currentRound > 30) state.currentPairs = generateRound('random'); else state.currentPairs = generateRound(state.currentRound);
+  state.currentPairs.forEach(p=>p.matched=false);
+  renderRound();
+}
+
+function endGame(chosenToEnd){
+  state.playing = false;
+  endGameHeader.style.display='none';
+  const titleEl = document.getElementById('overlayTitle');
+  const bodyEl = document.getElementById('overlayBody');
+  titleEl.textContent = chosenToEnd ? "Final Score" : "Game Over";
+  bodyEl.innerHTML = `<p>${chosenToEnd ? "You ended the game." : "Your score reached 0 or below."}</p><p><strong>Final score: ${state.score}</strong></p><p><button id="playAgain">Play Again</button> <button id="closeEnd" style="margin-left:8px;background:#ccc;color:#000;border-radius:8px;padding:8px 12px;border:0">Close</button></p>`;
+  overlay.style.display = 'flex';
+  document.getElementById('playAgain').addEventListener('click', ()=>{ overlay.style.display='none'; beginPlay(); });
+  document.getElementById('closeEnd').addEventListener('click', ()=>{ overlay.style.display='none'; openStartOverlay(); });
+}
+
+function openStartOverlay(){ overlay.style.display='flex'; startBtn.style.display='inline-block'; endGameHeader.style.display='none'; document.getElementById('overlayBody').innerHTML = document.getElementById('instructions').innerHTML; }
+function beginPlay(){ state.currentRound = 0; state.score = 0; state.movesMade = false; state.playing = true; updateScore(0); overlay.style.display='none'; startBtn.style.display='none'; endGameHeader.style.display='inline-block'; startNextRound(); }
+
+// kick off loading
+loadMasterColors();
+
+// expose for debugging
+window.__colorGame = { state, MASTER, LOOKUP, NAME_BY_KEY, curated };
+
+</script>
+</body>
+</html>
